@@ -30,7 +30,16 @@ type DadosMes = {
   gastos: Gasto[];
 };
 
+type PlanejamentoPagamento = {
+  diasAtePagamento: number;
+  mediaDiariaDisponivel: number;
+  mediaSemanalDisponivel: number;
+  previsaoSaldoDia25: number;
+  dataPagamentoFormatada: string;
+};
+
 const CHAVE_DADOS_MENSAIS = "controleGastosMensais";
+const DIA_PAGAMENTO = 25;
 
 const categoriasPadrao = [
   "MERCADO",
@@ -93,6 +102,10 @@ function formatarDataBR(data: string) {
   return `${partes[2]}/${partes[1]}/${partes[0]}`;
 }
 
+function formatarDataExtensa(data: Date) {
+  return data.toLocaleDateString("pt-BR");
+}
+
 function obterClasseMensagem(mensagem: string) {
   const texto = mensagem.toLowerCase();
 
@@ -141,6 +154,95 @@ function classeCategoria(categoria: string) {
     default:
       return "bg-slate-100 text-slate-700";
   }
+}
+
+function ehCompetenciaAtual(ano: string, mes: string) {
+  return ano === obterAnoAtual() && mes === obterMesAtual();
+}
+
+function calcularPlanejamentoPagamento(restante: number): PlanejamentoPagamento {
+  const hoje = new Date();
+  const ano = hoje.getFullYear();
+  const mes = hoje.getMonth();
+
+  let dataPagamento = new Date(ano, mes, DIA_PAGAMENTO);
+
+  if (hoje.getDate() > DIA_PAGAMENTO) {
+    dataPagamento = new Date(ano, mes + 1, DIA_PAGAMENTO);
+  }
+
+  const inicioHoje = new Date(
+    hoje.getFullYear(),
+    hoje.getMonth(),
+    hoje.getDate()
+  );
+
+  const diffMs = dataPagamento.getTime() - inicioHoje.getTime();
+  const diasAtePagamento = Math.max(
+    1,
+    Math.ceil(diffMs / (1000 * 60 * 60 * 24))
+  );
+
+  const mediaDiariaDisponivel = restante / diasAtePagamento;
+  const mediaSemanalDisponivel = mediaDiariaDisponivel * 7;
+
+  return {
+    diasAtePagamento,
+    mediaDiariaDisponivel,
+    mediaSemanalDisponivel,
+    previsaoSaldoDia25: restante,
+    dataPagamentoFormatada: formatarDataExtensa(dataPagamento),
+  };
+}
+
+function obterFaixaMediaDiaria(mediaDiaria: number) {
+  if (mediaDiaria <= 0) {
+    return {
+      titulo: "Atenção máxima",
+      descricao:
+        "O saldo restante já não cobre o período até o próximo pagamento.",
+      classeContainer: "border-red-200 bg-red-50 text-red-800",
+      classeBadge: "bg-red-600 text-white",
+    };
+  }
+
+  if (mediaDiaria < 20) {
+    return {
+      titulo: "Muito baixa",
+      descricao:
+        "A média diária está bastante apertada. Vale conter gastos não essenciais.",
+      classeContainer: "border-red-200 bg-red-50 text-red-800",
+      classeBadge: "bg-red-600 text-white",
+    };
+  }
+
+  if (mediaDiaria < 50) {
+    return {
+      titulo: "Baixa",
+      descricao:
+        "A margem diária está curta. É recomendável acompanhar os gastos de perto.",
+      classeContainer: "border-amber-200 bg-amber-50 text-amber-900",
+      classeBadge: "bg-amber-500 text-white",
+    };
+  }
+
+  if (mediaDiaria < 100) {
+    return {
+      titulo: "Moderada",
+      descricao:
+        "A média diária está razoável, mas ainda pede alguma disciplina.",
+      classeContainer: "border-yellow-200 bg-yellow-50 text-yellow-900",
+      classeBadge: "bg-yellow-500 text-white",
+    };
+  }
+
+  return {
+    titulo: "Confortável",
+    descricao:
+      "A média diária está saudável para seguir até o próximo pagamento.",
+    classeContainer: "border-emerald-200 bg-emerald-50 text-emerald-900",
+    classeBadge: "bg-emerald-600 text-white",
+  };
 }
 
 export default function Home() {
@@ -393,10 +495,14 @@ export default function Home() {
 
       if (dadosSupabase) {
         const salarioDoBanco = String(dadosSupabase.salario ?? "");
+        const observacaoDoBanco = String(dadosSupabase.observacao_mensal ?? "");
+
         setSalario(salarioDoBanco);
+        setObservacaoMensal(observacaoDoBanco);
         setEditandoSalario(!(salarioDoBanco && salarioDoBanco !== ""));
       } else {
         setSalario(dadosLocais?.salario || "");
+        setObservacaoMensal(dadosLocais?.observacaoMensal || "");
         setEditandoSalario(
           !(dadosLocais?.salario && dadosLocais.salario !== "")
         );
@@ -428,7 +534,9 @@ export default function Home() {
         dadosSupabase
           ? String(dadosSupabase.salario ?? "")
           : dadosLocais?.salario || "",
-        dadosLocais?.observacaoMensal || "",
+        dadosSupabase
+          ? String(dadosSupabase.observacao_mensal ?? "")
+          : dadosLocais?.observacaoMensal || "",
         extrasBanco.length > 0 ? extrasBanco : dadosLocais?.extras || [],
         gastosBanco.length > 0 ? gastosBanco : dadosLocais?.gastos || []
       );
@@ -640,6 +748,8 @@ export default function Home() {
       const totalGastos = gastos.reduce((acc, gasto) => acc + gasto.valor, 0);
       const totalDisponivel = Number(salario || 0) + totalExtras;
       const restante = totalDisponivel - totalGastos;
+      const competenciaAtual = ehCompetenciaAtual(anoSelecionado, mesSelecionado);
+      const planejamento = calcularPlanejamentoPagamento(restante);
 
       const abaResumo = [
         { Campo: "Ano", Valor: anoSelecionado },
@@ -650,6 +760,22 @@ export default function Home() {
         { Campo: "Total de gastos", Valor: totalGastos },
         { Campo: "Valor restante", Valor: restante },
         { Campo: "Observação do mês", Valor: observacaoMensal || "" },
+        {
+          Campo: "Dias até o pagamento",
+          Valor: competenciaAtual ? planejamento.diasAtePagamento : "N/A",
+        },
+        {
+          Campo: "Média disponível por dia",
+          Valor: competenciaAtual ? planejamento.mediaDiariaDisponivel : "N/A",
+        },
+        {
+          Campo: "Média disponível por semana",
+          Valor: competenciaAtual ? planejamento.mediaSemanalDisponivel : "N/A",
+        },
+        {
+          Campo: "Previsão de saldo no dia 25",
+          Valor: competenciaAtual ? planejamento.previsaoSaldoDia25 : "N/A",
+        },
       ];
 
       const abaExtras =
@@ -713,6 +839,11 @@ export default function Home() {
   const restante = totalDisponivel - totalGastos;
   const percentualUsado = calcularPercentualUsado(totalDisponivel, totalGastos);
   const nomeMesAtual = nomeDoMes(mesSelecionado);
+  const competenciaAtual = ehCompetenciaAtual(anoSelecionado, mesSelecionado);
+  const planejamentoPagamento = calcularPlanejamentoPagamento(restante);
+  const faixaMediaDiaria = obterFaixaMediaDiaria(
+    planejamentoPagamento.mediaDiariaDisponivel
+  );
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#f8fafc,_#e2e8f0_55%,_#cbd5e1)] text-slate-900">
@@ -731,8 +862,8 @@ export default function Home() {
 
                 <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-200 sm:text-base">
                   Organize salário, extras, despesas e observações mensais com
-                  separação por ano e mês, mantendo integração com Supabase e
-                  exportação em Excel.
+                  separação por ano e mês, mantendo integração com Supabase,
+                  exportação em Excel e indicadores de planejamento até o dia 25.
                 </p>
               </div>
 
@@ -925,6 +1056,110 @@ export default function Home() {
               </div>
             </div>
           </div>
+        </section>
+
+        <section className="mt-6 rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_14px_40px_rgba(15,23,42,0.08)]">
+          <div className="flex flex-col gap-2 border-b border-slate-200 pb-5">
+            <h2 className="text-xl font-bold text-slate-900">
+              Planejamento até o pagamento
+            </h2>
+            <p className="text-sm text-slate-500">
+              Indicadores baseados no saldo restante e no próximo recebimento do
+              dia 25.
+            </p>
+          </div>
+
+          {competenciaAtual ? (
+            <>
+              <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <IndicadorResumo
+                  titulo="Dias até pagamento"
+                  valor={String(planejamentoPagamento.diasAtePagamento)}
+                  descricao={`Próximo pagamento em ${planejamentoPagamento.dataPagamentoFormatada}`}
+                  cor="blue"
+                />
+                <IndicadorResumo
+                  titulo="Disponível por dia"
+                  valor={formatarMoeda(
+                    planejamentoPagamento.mediaDiariaDisponivel
+                  )}
+                  descricao="Média diária até o dia 25"
+                  cor="green"
+                />
+                <IndicadorResumo
+                  titulo="Disponível por semana"
+                  valor={formatarMoeda(
+                    planejamentoPagamento.mediaSemanalDisponivel
+                  )}
+                  descricao="Média semanal projetada"
+                  cor="violet"
+                />
+                <IndicadorResumo
+                  titulo="Previsão no dia 25"
+                  valor={formatarMoeda(
+                    planejamentoPagamento.previsaoSaldoDia25
+                  )}
+                  descricao="Saldo estimado mantendo o cenário atual"
+                  cor="red"
+                />
+              </div>
+
+              <div
+                className={`mt-5 rounded-3xl border p-5 ${faixaMediaDiaria.classeContainer}`}
+              >
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold uppercase tracking-wide">
+                      Alerta de média diária
+                    </p>
+                    <h3 className="mt-1 text-xl font-bold">
+                      Situação: {faixaMediaDiaria.titulo}
+                    </h3>
+                    <p className="mt-2 text-sm leading-6">
+                      {faixaMediaDiaria.descricao}
+                    </p>
+                  </div>
+
+                  <div
+                    className={`w-fit rounded-full px-4 py-2 text-sm font-semibold ${faixaMediaDiaria.classeBadge}`}
+                  >
+                    Média diária:{" "}
+                    {formatarMoeda(planejamentoPagamento.mediaDiariaDisponivel)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-5 grid gap-4 xl:grid-cols-3">
+                <MiniResumo
+                  titulo="Saldo restante atual"
+                  valor={formatarMoeda(restante)}
+                />
+                <MiniResumo
+                  titulo="Limite médio por dia"
+                  valor={formatarMoeda(
+                    planejamentoPagamento.mediaDiariaDisponivel
+                  )}
+                />
+                <MiniResumo
+                  titulo="Limite médio por semana"
+                  valor={formatarMoeda(
+                    planejamentoPagamento.mediaSemanalDisponivel
+                  )}
+                />
+              </div>
+            </>
+          ) : (
+            <div className="mt-6 rounded-3xl border border-dashed border-slate-300 bg-slate-50 px-6 py-8">
+              <p className="text-base font-semibold text-slate-800">
+                Indicadores de planejamento indisponíveis para esta competência
+              </p>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                Os cálculos de média diária, média semanal, dias até pagamento e
+                previsão de saldo no dia 25 aparecem apenas quando o mês e o ano
+                selecionados correspondem à competência atual.
+              </p>
+            </div>
+          )}
         </section>
 
         <div className="mt-6 grid gap-6 xl:grid-cols-[1.08fr_0.92fr]">
@@ -1148,11 +1383,19 @@ export default function Home() {
                 />
               </div>
 
-              <div className="mt-5 rounded-3xl border border-white/10 bg-white/10 p-5">
-                <p className="text-sm text-slate-200">Valor restante</p>
-                <p className="mt-2 text-3xl font-bold">
-                  {formatarMoeda(restante)}
-                </p>
+              <div className="mt-5 grid gap-4 md:grid-cols-2">
+                <ResumoEscuro
+                  titulo="Restante"
+                  valor={formatarMoeda(restante)}
+                />
+                <ResumoEscuro
+                  titulo="Previsão no dia 25"
+                  valor={
+                    competenciaAtual
+                      ? formatarMoeda(planejamentoPagamento.previsaoSaldoDia25)
+                      : "Somente no mês atual"
+                  }
+                />
               </div>
             </div>
           </section>
