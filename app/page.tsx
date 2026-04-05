@@ -40,6 +40,7 @@ type PlanejamentoPagamento = {
 
 const CHAVE_DADOS_MENSAIS = "controleGastosMensais";
 const DIA_PAGAMENTO = 25;
+const SENHA_ACESSO = "199600";
 
 const categoriasPadrao = [
   "MERCADO",
@@ -121,7 +122,8 @@ function obterClasseMensagem(mensagem: string) {
     texto.includes("exportado") ||
     texto.includes("adicionado") ||
     texto.includes("excluído") ||
-    texto.includes("apagados")
+    texto.includes("apagados") ||
+    texto.includes("restaurados")
   ) {
     return "border-emerald-200 bg-emerald-50 text-emerald-700";
   }
@@ -246,6 +248,9 @@ function obterFaixaMediaDiaria(mediaDiaria: number) {
 }
 
 export default function Home() {
+  const [isAutenticado, setIsAutenticado] = useState(false);
+  const [senhaInput, setSenhaInput] = useState("");
+
   const anosDisponiveis = useMemo(() => criarAnos(), []);
 
   const [anoSelecionado, setAnoSelecionado] = useState(obterAnoAtual());
@@ -268,8 +273,28 @@ export default function Home() {
 
   const [gastos, setGastos] = useState<Gasto[]>([]);
   const [mensagem, setMensagem] = useState("");
+  
+  // Backup para a função "Desfazer Limpar Mês"
+  const [backupMes, setBackupMes] = useState<DadosMes | null>(null);
 
   const chaveMesAtual = `${anoSelecionado}-${mesSelecionado}`;
+
+  useEffect(() => {
+    const authSalva = localStorage.getItem("authGastos");
+    if (authSalva === SENHA_ACESSO) {
+      setIsAutenticado(true);
+    }
+  }, []);
+
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (senhaInput === SENHA_ACESSO) {
+      setIsAutenticado(true);
+      localStorage.setItem("authGastos", SENHA_ACESSO);
+    } else {
+      alert("Senha incorreta");
+    }
+  };
 
   function lerBancoCompleto(): Record<string, DadosMes> {
     try {
@@ -482,6 +507,11 @@ export default function Home() {
 
   async function carregarMesAtual() {
     try {
+      if (!isAutenticado) return; // Segurança extra
+      
+      // Ao trocar de mês, limpa o backup de exclusão se existir
+      setBackupMes(null);
+      
       const banco = lerBancoCompleto();
       const dadosLocais = banco[chaveMesAtual];
 
@@ -571,7 +601,7 @@ export default function Home() {
   useEffect(() => {
     carregarMesAtual();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [anoSelecionado, mesSelecionado]);
+  }, [anoSelecionado, mesSelecionado, isAutenticado]);
 
   const adicionarGasto = async () => {
     if (!valor || !categoria || !data) {
@@ -696,7 +726,18 @@ export default function Home() {
   };
 
   const limparMesAtual = async () => {
+    const confirmacao = window.confirm("Tem certeza que deseja apagar todos os dados deste mês?");
+    if (!confirmacao) return;
+
     try {
+      // Salva backup na memória antes de excluir
+      setBackupMes({
+        salario,
+        observacaoMensal,
+        extras: [...extras],
+        gastos: [...gastos],
+      });
+
       const banco = lerBancoCompleto();
       delete banco[chaveMesAtual];
       salvarBancoCompleto(banco);
@@ -737,6 +778,39 @@ export default function Home() {
     } catch (error) {
       console.error("Erro ao limpar mês atual:", error);
       setMensagem("Erro ao limpar os dados do mês.");
+    }
+  };
+
+  const desfazerLimparMes = async () => {
+    if (!backupMes) return;
+    try {
+      setMensagem("Restaurando dados, aguarde...");
+
+      await salvarSalarioSupabase(
+        anoSelecionado, 
+        mesSelecionado, 
+        backupMes.salario, 
+        backupMes.observacaoMensal
+      );
+
+      for (const extra of backupMes.extras) {
+        // Removendo o ID para criar um novo registro e evitar conflitos no banco
+        const { id, ...extraSemId } = extra;
+        await salvarExtraSupabase(extraSemId);
+      }
+
+      for (const gasto of backupMes.gastos) {
+        // Removendo o ID para criar um novo registro
+        const { id, ...gastoSemId } = gasto;
+        await salvarGastoSupabase(gastoSemId);
+      }
+
+      await carregarMesAtual();
+      setBackupMes(null);
+      setMensagem("Ação desfeita. Dados restaurados com sucesso.");
+    } catch (error) {
+      console.error("Erro ao desfazer", error);
+      setMensagem("Erro ao tentar restaurar os dados.");
     }
   };
 
@@ -833,6 +907,33 @@ export default function Home() {
     }
   };
 
+  // Se não estiver autenticado, mostra a tela de login
+  if (!isAutenticado) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top,_#f8fafc,_#e2e8f0_55%,_#cbd5e1)] p-4 font-sans text-slate-900">
+        <div className="w-full max-w-sm rounded-[32px] border border-slate-200 bg-white p-8 shadow-[0_20px_60px_rgba(15,23,42,0.10)]">
+          <h1 className="mb-2 text-center text-2xl font-bold text-slate-900">Acesso Restrito</h1>
+          <p className="mb-6 text-center text-sm text-slate-500">Informe a senha para acessar o painel de controle de gastos.</p>
+          <form onSubmit={handleLogin} className="flex flex-col gap-4">
+            <input
+              type="password"
+              placeholder="Digite a senha"
+              value={senhaInput}
+              onChange={(e) => setSenhaInput(e.target.value)}
+              className="w-full rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 text-center text-lg tracking-widest outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+            />
+            <button
+              type="submit"
+              className="w-full rounded-2xl bg-blue-600 px-4 py-3 font-medium text-white transition hover:bg-blue-700"
+            >
+              Acessar
+            </button>
+          </form>
+        </div>
+      </main>
+    );
+  }
+
   const totalExtras = extras.reduce((acc, extra) => acc + extra.valor, 0);
   const totalDisponivel = Number(salario || 0) + totalExtras;
   const totalGastos = gastos.reduce((acc, gasto) => acc + gasto.valor, 0);
@@ -849,14 +950,14 @@ export default function Home() {
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#f8fafc,_#e2e8f0_55%,_#cbd5e1)] text-slate-900">
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
         <section className="overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.10)]">
-          <div className="bg-gradient-to-r from-slate-950 via-slate-800 to-slate-700 px-6 py-8 text-white sm:px-8">
+          <div className="bg-gradient-to-r from-slate-950 via-slate-800 to-slate-700 px-4 py-6 text-white sm:px-8 sm:py-8">
             <div className="flex flex-col gap-6 xl:flex-row xl:items-center xl:justify-between">
               <div className="max-w-3xl">
                 <div className="mb-3 inline-flex rounded-full border border-white/15 bg-white/10 px-4 py-1.5 text-xs font-semibold uppercase tracking-[0.22em] text-slate-100">
                   Sistema financeiro pessoal
                 </div>
 
-                <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
+                <h1 className="text-2xl font-bold tracking-tight sm:text-4xl">
                   Controle de Gastos
                 </h1>
 
@@ -888,29 +989,39 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="border-t border-slate-200 bg-white px-6 py-4 sm:px-8">
+          <div className="border-t border-slate-200 bg-white px-4 py-4 sm:px-8">
             <div
               className={`rounded-2xl border px-4 py-4 text-sm ${obterClasseMensagem(
                 mensagem
               )}`}
             >
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div>
-                  <span className="font-semibold">Status:</span>{" "}
-                  {mensagem || "Sistema pronto para uso."}
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                  <div>
+                    <span className="font-semibold">Status:</span>{" "}
+                    {mensagem || "Sistema pronto para uso."}
+                  </div>
+                  {backupMes && (
+                    <button
+                      onClick={desfazerLimparMes}
+                      className="w-full sm:w-auto rounded-xl bg-amber-500 px-3 py-1.5 font-bold text-white shadow-sm transition hover:bg-amber-600"
+                    >
+                      Desfazer Exclusão
+                    </button>
+                  )}
                 </div>
 
-                <div className="flex flex-wrap gap-3">
+                <div className="flex flex-col flex-wrap gap-3 sm:flex-row">
                   <button
                     onClick={testarSupabase}
-                    className="rounded-2xl bg-slate-900 px-4 py-2.5 font-medium text-white transition hover:bg-slate-800"
+                    className="w-full rounded-2xl bg-slate-900 px-4 py-2.5 font-medium text-white transition hover:bg-slate-800 sm:w-auto"
                   >
                     Testar Supabase
                   </button>
 
                   <button
                     onClick={carregarMesAtual}
-                    className="rounded-2xl border border-slate-300 bg-white px-4 py-2.5 font-medium text-slate-700 transition hover:bg-slate-50"
+                    className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-2.5 font-medium text-slate-700 transition hover:bg-slate-50 sm:w-auto"
                   >
                     Recarregar mês
                   </button>
@@ -947,7 +1058,7 @@ export default function Home() {
           />
         </section>
 
-        <section className="mt-6 rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_14px_40px_rgba(15,23,42,0.08)]">
+        <section className="mt-6 rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_14px_40px_rgba(15,23,42,0.08)] sm:p-6">
           <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
             <div>
               <h2 className="text-xl font-bold text-slate-900">Competência</h2>
@@ -988,7 +1099,7 @@ export default function Home() {
           </div>
 
           <div className="mt-6 grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-            <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+            <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4 sm:p-5">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="text-sm font-semibold text-slate-700">
@@ -999,7 +1110,7 @@ export default function Home() {
                   </p>
                 </div>
 
-                <div className="rounded-full bg-white px-4 py-2 text-sm font-bold text-slate-700 shadow-sm">
+                <div className="w-fit rounded-full bg-white px-4 py-2 text-sm font-bold text-slate-700 shadow-sm">
                   {percentualUsado.toFixed(1)}%
                 </div>
               </div>
@@ -1027,29 +1138,29 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="rounded-3xl border border-slate-200 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-700 p-5 text-white">
+            <div className="rounded-3xl border border-slate-200 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-700 p-4 text-white sm:p-5">
               <p className="text-sm font-semibold uppercase tracking-wide text-slate-200">
                 Ações rápidas
               </p>
 
-              <div className="mt-4 grid gap-3">
+              <div className="mt-4 flex flex-col gap-3">
                 <button
                   onClick={exportarExcelMesAtual}
-                  className="rounded-2xl bg-emerald-500 px-4 py-3 font-medium text-white transition hover:bg-emerald-600"
+                  className="w-full rounded-2xl bg-emerald-500 px-4 py-3 font-medium text-white transition hover:bg-emerald-600"
                 >
                   Exportar Excel do mês
                 </button>
 
                 <button
                   onClick={() => setMostrarCampoExtra(!mostrarCampoExtra)}
-                  className="rounded-2xl bg-white/10 px-4 py-3 font-medium text-white transition hover:bg-white/15"
+                  className="w-full rounded-2xl bg-white/10 px-4 py-3 font-medium text-white transition hover:bg-white/15"
                 >
                   {mostrarCampoExtra ? "Cancelar extra" : "Adicionar extra"}
                 </button>
 
                 <button
                   onClick={limparMesAtual}
-                  className="rounded-2xl bg-red-600 px-4 py-3 font-medium text-white transition hover:bg-red-700"
+                  className="w-full rounded-2xl bg-red-600 px-4 py-3 font-medium text-white transition hover:bg-red-700"
                 >
                   Limpar mês
                 </button>
@@ -1058,7 +1169,7 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="mt-6 rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_14px_40px_rgba(15,23,42,0.08)]">
+        <section className="mt-6 rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_14px_40px_rgba(15,23,42,0.08)] sm:p-6">
           <div className="flex flex-col gap-2 border-b border-slate-200 pb-5">
             <h2 className="text-xl font-bold text-slate-900">
               Planejamento até o pagamento
@@ -1107,7 +1218,7 @@ export default function Home() {
               <div
                 className={`mt-5 rounded-3xl border p-5 ${faixaMediaDiaria.classeContainer}`}
               >
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                   <div>
                     <p className="text-sm font-semibold uppercase tracking-wide">
                       Alerta de média diária
@@ -1163,7 +1274,7 @@ export default function Home() {
         </section>
 
         <div className="mt-6 grid gap-6 xl:grid-cols-[1.08fr_0.92fr]">
-          <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_14px_40px_rgba(15,23,42,0.08)]">
+          <section className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_14px_40px_rgba(15,23,42,0.08)] sm:p-6">
             <div className="flex flex-col gap-2 border-b border-slate-200 pb-5">
               <h2 className="text-xl font-bold text-slate-900">Dados do mês</h2>
               <p className="text-sm text-slate-500">
@@ -1171,7 +1282,7 @@ export default function Home() {
               </p>
             </div>
 
-            <div className="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-5">
+            <div className="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-4 sm:p-5">
               <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h3 className="text-lg font-semibold text-slate-900">
@@ -1210,22 +1321,22 @@ export default function Home() {
                 {editandoSalario ? (
                   <button
                     onClick={salvarSalario}
-                    className="rounded-2xl bg-blue-600 px-5 py-3 font-medium text-white transition hover:bg-blue-700"
+                    className="w-full rounded-2xl bg-blue-600 px-5 py-3 font-medium text-white transition hover:bg-blue-700 lg:w-auto"
                   >
-                    Salvar salário
+                    Salvar
                   </button>
                 ) : (
                   <button
                     onClick={editarSalario}
-                    className="rounded-2xl bg-slate-700 px-5 py-3 font-medium text-white transition hover:bg-slate-800"
+                    className="w-full rounded-2xl bg-slate-700 px-5 py-3 font-medium text-white transition hover:bg-slate-800 lg:w-auto"
                   >
-                    Editar salário
+                    Editar
                   </button>
                 )}
               </div>
             </div>
 
-            <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-5">
+            <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-4 sm:p-5">
               <h3 className="text-lg font-semibold text-slate-900">
                 Observação do mês
               </h3>
@@ -1243,7 +1354,7 @@ export default function Home() {
             </div>
 
             {mostrarCampoExtra && (
-              <div className="mt-6 rounded-3xl border border-emerald-200 bg-emerald-50 p-5">
+              <div className="mt-6 rounded-3xl border border-emerald-200 bg-emerald-50 p-4 sm:p-5">
                 <h3 className="text-lg font-semibold text-emerald-900">
                   Novo extra
                 </h3>
@@ -1272,7 +1383,7 @@ export default function Home() {
                 <div className="mt-4">
                   <button
                     onClick={adicionarExtra}
-                    className="rounded-2xl bg-emerald-600 px-5 py-3 font-medium text-white transition hover:bg-emerald-700"
+                    className="w-full rounded-2xl bg-emerald-600 px-5 py-3 font-medium text-white transition hover:bg-emerald-700 sm:w-auto"
                   >
                     Salvar extra
                   </button>
@@ -1280,7 +1391,7 @@ export default function Home() {
               </div>
             )}
 
-            <div className="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-5">
+            <div className="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-4 sm:p-5">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h3 className="text-lg font-semibold text-slate-900">
@@ -1291,7 +1402,7 @@ export default function Home() {
                   </p>
                 </div>
 
-                <div className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm">
+                <div className="w-fit rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm">
                   {extras.length} item(ns)
                 </div>
               </div>
@@ -1305,7 +1416,7 @@ export default function Home() {
                 </div>
               ) : (
                 <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-200 bg-white">
-                  <table className="min-w-full text-sm">
+                  <table className="min-w-full whitespace-nowrap text-sm">
                     <thead className="bg-slate-100 text-slate-700">
                       <tr>
                         <th className="px-4 py-3 text-left font-semibold">
@@ -1358,13 +1469,13 @@ export default function Home() {
 
                 <button
                   onClick={exportarExcelMesAtual}
-                  className="rounded-2xl bg-emerald-500 px-5 py-3 font-medium text-white transition hover:bg-emerald-600"
+                  className="w-full rounded-2xl bg-emerald-500 px-5 py-3 font-medium text-white transition hover:bg-emerald-600 lg:w-auto"
                 >
                   Exportar Excel
                 </button>
               </div>
 
-              <div className="mt-5 grid gap-4 md:grid-cols-2">
+              <div className="mt-5 grid gap-4 sm:grid-cols-2">
                 <ResumoEscuro
                   titulo="Salário"
                   valor={formatarMoeda(Number(salario || 0))}
@@ -1383,7 +1494,7 @@ export default function Home() {
                 />
               </div>
 
-              <div className="mt-5 grid gap-4 md:grid-cols-2">
+              <div className="mt-5 grid gap-4 sm:grid-cols-2">
                 <ResumoEscuro
                   titulo="Restante"
                   valor={formatarMoeda(restante)}
@@ -1400,7 +1511,7 @@ export default function Home() {
             </div>
           </section>
 
-          <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-[0_14px_40px_rgba(15,23,42,0.08)]">
+          <section className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_14px_40px_rgba(15,23,42,0.08)] sm:p-6">
             <div className="flex flex-col gap-2 border-b border-slate-200 pb-5">
               <h2 className="text-xl font-bold text-slate-900">Novo gasto</h2>
               <p className="text-sm text-slate-500">
@@ -1464,30 +1575,30 @@ export default function Home() {
               </CampoBox>
             </div>
 
-            <div className="mt-6 flex flex-wrap gap-3">
+            <div className="mt-6 flex flex-col flex-wrap gap-3 sm:flex-row">
               <button
                 onClick={adicionarGasto}
-                className="rounded-2xl bg-blue-600 px-5 py-3 font-medium text-white transition hover:bg-blue-700"
+                className="w-full rounded-2xl bg-blue-600 px-5 py-3 font-medium text-white transition hover:bg-blue-700 sm:w-auto"
               >
                 Adicionar gasto
               </button>
 
               <button
                 onClick={carregarMesAtual}
-                className="rounded-2xl bg-slate-700 px-5 py-3 font-medium text-white transition hover:bg-slate-800"
+                className="w-full rounded-2xl bg-slate-700 px-5 py-3 font-medium text-white transition hover:bg-slate-800 sm:w-auto"
               >
                 Recarregar
               </button>
 
               <button
                 onClick={limparMesAtual}
-                className="rounded-2xl bg-red-600 px-5 py-3 font-medium text-white transition hover:bg-red-700"
+                className="w-full rounded-2xl bg-red-600 px-5 py-3 font-medium text-white transition hover:bg-red-700 sm:w-auto"
               >
                 Limpar mês
               </button>
             </div>
 
-            <div className="mt-8 rounded-3xl border border-slate-200 bg-slate-50 p-5">
+            <div className="mt-8 rounded-3xl border border-slate-200 bg-slate-50 p-4 sm:p-5">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h3 className="text-lg font-semibold text-slate-900">
@@ -1498,7 +1609,7 @@ export default function Home() {
                   </p>
                 </div>
 
-                <div className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm">
+                <div className="w-fit rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm">
                   {gastos.length} item(ns)
                 </div>
               </div>
@@ -1512,7 +1623,7 @@ export default function Home() {
                 </div>
               ) : (
                 <div className="mt-5 overflow-x-auto rounded-2xl border border-slate-200 bg-white">
-                  <table className="min-w-full text-sm">
+                  <table className="min-w-full whitespace-nowrap text-sm">
                     <thead className="bg-slate-100 text-slate-700">
                       <tr>
                         <th className="px-4 py-3 text-left font-semibold">
