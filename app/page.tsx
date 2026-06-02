@@ -3,6 +3,17 @@
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 import { supabase } from "@/lib/supabase";
+import {
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip,
+  ResponsiveContainer,
+} from "recharts";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 type Gasto = {
   id?: number;
@@ -38,9 +49,30 @@ type PlanejamentoPagamento = {
   dataPagamentoFormatada: string;
 };
 
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
 const CHAVE_DADOS_MENSAIS = "controleGastosMensais";
 const DIA_PAGAMENTO = 25;
-const SENHA_ACESSO = "199600";
+
+/**
+ * SEGURANÇA: senha lida de variável de ambiente, não exposta no código.
+ * Defina NEXT_PUBLIC_ACCESS_PASSWORD no seu .env.local e nas variáveis
+ * de ambiente do projeto na Vercel.
+ */
+const SENHA_ACESSO = process.env.NEXT_PUBLIC_ACCESS_PASSWORD ?? "";
+
+const CORES_CATEGORIA: Record<string, string> = {
+  MERCADO: "#10b981",
+  ALIMENTAÇÃO: "#f97316",
+  TRANSPORTE: "#0ea5e9",
+  SAÚDE: "#f43f5e",
+  LAZER: "#8b5cf6",
+  MORADIA: "#f59e0b",
+  CONTAS: "#06b6d4",
+  OUTROS: "#64748b",
+};
 
 const categoriasPadrao = [
   "MERCADO",
@@ -67,6 +99,10 @@ const meses = [
   { valor: "11", nome: "Novembro" },
   { valor: "12", nome: "Dezembro" },
 ];
+
+// ---------------------------------------------------------------------------
+// Pure helpers
+// ---------------------------------------------------------------------------
 
 function obterAnoAtual() {
   return String(new Date().getFullYear());
@@ -162,7 +198,9 @@ function ehCompetenciaAtual(ano: string, mes: string) {
   return ano === obterAnoAtual() && mes === obterMesAtual();
 }
 
-function calcularPlanejamentoPagamento(restante: number): PlanejamentoPagamento {
+function calcularPlanejamentoPagamento(
+  restante: number
+): PlanejamentoPagamento {
   const hoje = new Date();
   const ano = hoje.getFullYear();
   const mes = hoje.getMonth();
@@ -247,6 +285,32 @@ function obterFaixaMediaDiaria(mediaDiaria: number) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Custom recharts tooltip
+// ---------------------------------------------------------------------------
+
+function TooltipGrafico({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ name: string; value: number }>;
+}) {
+  if (active && payload && payload.length) {
+    return (
+      <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-lg text-sm">
+        <p className="font-semibold text-slate-800">{payload[0].name}</p>
+        <p className="text-slate-600">{formatarMoeda(payload[0].value)}</p>
+      </div>
+    );
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+
 export default function Home() {
   const [isAutenticado, setIsAutenticado] = useState(false);
   const [senhaInput, setSenhaInput] = useState("");
@@ -273,11 +337,15 @@ export default function Home() {
 
   const [gastos, setGastos] = useState<Gasto[]>([]);
   const [mensagem, setMensagem] = useState("");
-  
+
   // Backup para a função "Desfazer Limpar Mês"
   const [backupMes, setBackupMes] = useState<DadosMes | null>(null);
 
   const chaveMesAtual = `${anoSelecionado}-${mesSelecionado}`;
+
+  // -------------------------------------------------------------------------
+  // Auth
+  // -------------------------------------------------------------------------
 
   useEffect(() => {
     const authSalva = localStorage.getItem("authGastos");
@@ -295,6 +363,10 @@ export default function Home() {
       alert("Senha incorreta");
     }
   };
+
+  // -------------------------------------------------------------------------
+  // localStorage helpers
+  // -------------------------------------------------------------------------
 
   function lerBancoCompleto(): Record<string, DadosMes> {
     try {
@@ -318,31 +390,21 @@ export default function Home() {
   ) {
     try {
       const banco = lerBancoCompleto();
-
       banco[chaveMesAtual] = {
         salario: novoSalario,
         observacaoMensal: novaObservacaoMensal,
         extras: novosExtras,
         gastos: novosGastos,
       };
-
       salvarBancoCompleto(banco);
     } catch (error) {
       console.error("Erro ao salvar dados locais do mês:", error);
     }
   }
 
-  async function testarSupabase() {
-    const { error } = await supabase.from("meses").select("*");
-
-    if (error) {
-      console.error(error);
-      setMensagem("Erro ao conectar com Supabase");
-      return;
-    }
-
-    setMensagem("Supabase conectado com sucesso!");
-  }
+  // -------------------------------------------------------------------------
+  // Supabase — leitura
+  // -------------------------------------------------------------------------
 
   async function carregarSalarioSupabase(ano: string, mes: string) {
     const { data, error } = await supabase
@@ -360,6 +422,60 @@ export default function Home() {
 
     return data;
   }
+
+  async function carregarGastosSupabase(ano: string, mes: string) {
+    const { data, error } = await supabase
+      .from("gastos")
+      .select("*")
+      .eq("ano", Number(ano))
+      .eq("mes", Number(mes))
+      .order("data", { ascending: true })
+      .order("hora", { ascending: true });
+
+    if (error) {
+      console.error("Erro ao carregar gastos do Supabase:", error);
+      setMensagem("Erro ao carregar gastos do Supabase");
+      return [];
+    }
+
+    return (data || []).map((item) => ({
+      id: item.id,
+      ano: item.ano,
+      mes: item.mes,
+      valor: Number(item.valor || 0),
+      categoria: item.categoria || "",
+      data: item.data || "",
+      hora: item.hora || "",
+      observacao: item.observacao || "",
+    }));
+  }
+
+  async function carregarExtrasSupabase(ano: string, mes: string) {
+    const { data, error } = await supabase
+      .from("extras")
+      .select("*")
+      .eq("ano", Number(ano))
+      .eq("mes", Number(mes))
+      .order("id", { ascending: true });
+
+    if (error) {
+      console.error("Erro ao carregar extras do Supabase:", error);
+      setMensagem("Erro ao carregar extras do Supabase");
+      return [];
+    }
+
+    return (data || []).map((item) => ({
+      id: item.id,
+      ano: item.ano,
+      mes: item.mes,
+      nome: item.nome || "",
+      valor: Number(item.valor || 0),
+    }));
+  }
+
+  // -------------------------------------------------------------------------
+  // Supabase — escrita
+  // -------------------------------------------------------------------------
 
   async function salvarSalarioSupabase(
     ano: string,
@@ -388,33 +504,6 @@ export default function Home() {
     }
 
     return true;
-  }
-
-  async function carregarGastosSupabase(ano: string, mes: string) {
-    const { data, error } = await supabase
-      .from("gastos")
-      .select("*")
-      .eq("ano", Number(ano))
-      .eq("mes", Number(mes))
-      .order("data", { ascending: true })
-      .order("hora", { ascending: true });
-
-    if (error) {
-      console.error("Erro ao carregar gastos do Supabase:", error);
-      setMensagem("Erro ao carregar gastos do Supabase");
-      return [];
-    }
-
-    return (data || []).map((item) => ({
-      id: item.id,
-      ano: item.ano,
-      mes: item.mes,
-      valor: Number(item.valor || 0),
-      categoria: item.categoria || "",
-      data: item.data || "",
-      hora: item.hora || "",
-      observacao: item.observacao || "",
-    }));
   }
 
   async function salvarGastoSupabase(gasto: Gasto) {
@@ -451,29 +540,6 @@ export default function Home() {
     return true;
   }
 
-  async function carregarExtrasSupabase(ano: string, mes: string) {
-    const { data, error } = await supabase
-      .from("extras")
-      .select("*")
-      .eq("ano", Number(ano))
-      .eq("mes", Number(mes))
-      .order("id", { ascending: true });
-
-    if (error) {
-      console.error("Erro ao carregar extras do Supabase:", error);
-      setMensagem("Erro ao carregar extras do Supabase");
-      return [];
-    }
-
-    return (data || []).map((item) => ({
-      id: item.id,
-      ano: item.ano,
-      mes: item.mes,
-      nome: item.nome || "",
-      valor: Number(item.valor || 0),
-    }));
-  }
-
   async function salvarExtraSupabase(extra: Extra) {
     const { error } = await supabase.from("extras").insert([
       {
@@ -505,13 +571,16 @@ export default function Home() {
     return true;
   }
 
+  // -------------------------------------------------------------------------
+  // Carregar mês
+  // -------------------------------------------------------------------------
+
   async function carregarMesAtual() {
     try {
-      if (!isAutenticado) return; // Segurança extra
-      
-      // Ao trocar de mês, limpa o backup de exclusão se existir
+      if (!isAutenticado) return;
+
       setBackupMes(null);
-      
+
       const banco = lerBancoCompleto();
       const dadosLocais = banco[chaveMesAtual];
 
@@ -577,7 +646,9 @@ export default function Home() {
         extrasBanco.length > 0 ||
         dadosLocais
       ) {
-        setMensagem(`Dados carregados para ${mesSelecionado}/${anoSelecionado}.`);
+        setMensagem(
+          `Dados carregados para ${mesSelecionado}/${anoSelecionado}.`
+        );
       } else {
         setMensagem(
           `Nenhum dado encontrado para ${mesSelecionado}/${anoSelecionado}.`
@@ -602,6 +673,10 @@ export default function Home() {
     carregarMesAtual();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [anoSelecionado, mesSelecionado, isAutenticado]);
+
+  // -------------------------------------------------------------------------
+  // Ações de gastos
+  // -------------------------------------------------------------------------
 
   const adicionarGasto = async () => {
     if (!valor || !categoria || !data) {
@@ -652,6 +727,10 @@ export default function Home() {
     setMensagem("Gasto excluído com sucesso.");
   };
 
+  // -------------------------------------------------------------------------
+  // Ações de salário
+  // -------------------------------------------------------------------------
+
   const alterarSalario = (novoValor: string) => {
     setSalario(novoValor);
   };
@@ -680,6 +759,10 @@ export default function Home() {
     setObservacaoMensal(novoTexto);
     salvarMesAtualLocal(salario, novoTexto, extras, gastos);
   };
+
+  // -------------------------------------------------------------------------
+  // Ações de extras
+  // -------------------------------------------------------------------------
 
   const adicionarExtra = async () => {
     if (!nomeExtra || !valorExtra) {
@@ -725,12 +808,17 @@ export default function Home() {
     setMensagem("Extra excluído com sucesso.");
   };
 
+  // -------------------------------------------------------------------------
+  // Limpar / desfazer
+  // -------------------------------------------------------------------------
+
   const limparMesAtual = async () => {
-    const confirmacao = window.confirm("Tem certeza que deseja apagar todos os dados deste mês?");
+    const confirmacao = window.confirm(
+      "Tem certeza que deseja apagar todos os dados deste mês?"
+    );
     if (!confirmacao) return;
 
     try {
-      // Salva backup na memória antes de excluir
       setBackupMes({
         salario,
         observacaoMensal,
@@ -787,21 +875,21 @@ export default function Home() {
       setMensagem("Restaurando dados, aguarde...");
 
       await salvarSalarioSupabase(
-        anoSelecionado, 
-        mesSelecionado, 
-        backupMes.salario, 
+        anoSelecionado,
+        mesSelecionado,
+        backupMes.salario,
         backupMes.observacaoMensal
       );
 
       for (const extra of backupMes.extras) {
-        // Removendo o ID para criar um novo registro e evitar conflitos no banco
         const { id, ...extraSemId } = extra;
+        void id;
         await salvarExtraSupabase(extraSemId);
       }
 
       for (const gasto of backupMes.gastos) {
-        // Removendo o ID para criar um novo registro
         const { id, ...gastoSemId } = gasto;
+        void id;
         await salvarGastoSupabase(gastoSemId);
       }
 
@@ -814,6 +902,10 @@ export default function Home() {
     }
   };
 
+  // -------------------------------------------------------------------------
+  // Exportação XLSX — com largura de colunas e linha de total
+  // -------------------------------------------------------------------------
+
   const exportarExcelMesAtual = () => {
     try {
       const nomeMesAtual = nomeDoMes(mesSelecionado);
@@ -822,9 +914,13 @@ export default function Home() {
       const totalGastos = gastos.reduce((acc, gasto) => acc + gasto.valor, 0);
       const totalDisponivel = Number(salario || 0) + totalExtras;
       const restante = totalDisponivel - totalGastos;
-      const competenciaAtual = ehCompetenciaAtual(anoSelecionado, mesSelecionado);
+      const competenciaAtual = ehCompetenciaAtual(
+        anoSelecionado,
+        mesSelecionado
+      );
       const planejamento = calcularPlanejamentoPagamento(restante);
 
+      // --- Aba Resumo ---
       const abaResumo = [
         { Campo: "Ano", Valor: anoSelecionado },
         { Campo: "Mês", Valor: nomeMesAtual },
@@ -840,11 +936,15 @@ export default function Home() {
         },
         {
           Campo: "Média disponível por dia",
-          Valor: competenciaAtual ? planejamento.mediaDiariaDisponivel : "N/A",
+          Valor: competenciaAtual
+            ? planejamento.mediaDiariaDisponivel
+            : "N/A",
         },
         {
           Campo: "Média disponível por semana",
-          Valor: competenciaAtual ? planejamento.mediaSemanalDisponivel : "N/A",
+          Valor: competenciaAtual
+            ? planejamento.mediaSemanalDisponivel
+            : "N/A",
         },
         {
           Campo: "Previsão de saldo no dia 25",
@@ -852,6 +952,7 @@ export default function Home() {
         },
       ];
 
+      // --- Aba Extras ---
       const abaExtras =
         extras.length > 0
           ? extras.map((extra) => ({
@@ -860,10 +961,11 @@ export default function Home() {
             }))
           : [{ Nome: "Sem extras", Valor: 0 }];
 
-      const abaGastos =
+      // --- Aba Gastos (com linha de total) ---
+      const linhasGastos =
         gastos.length > 0
           ? gastos.map((gasto) => ({
-              Data: gasto.data,
+              Data: formatarDataBR(gasto.data),
               Hora: gasto.hora || "",
               Categoria: gasto.categoria,
               Observação: gasto.observacao || "",
@@ -879,23 +981,62 @@ export default function Home() {
               },
             ];
 
+      // Linha de total ao final da aba Gastos
+      if (gastos.length > 0) {
+        linhasGastos.push({
+          Data: "",
+          Hora: "",
+          Categoria: "TOTAL",
+          Observação: "",
+          Valor: totalGastos,
+        });
+      }
+
+      // --- Aba Categorias (nova: resumo por categoria) ---
+      const porCategoria: Record<string, number> = {};
+      gastos.forEach((g) => {
+        porCategoria[g.categoria] =
+          (porCategoria[g.categoria] || 0) + g.valor;
+      });
+      const abaCategorias =
+        Object.entries(porCategoria).length > 0
+          ? Object.entries(porCategoria)
+              .sort((a, b) => b[1] - a[1])
+              .map(([categoria, valor]) => ({
+                Categoria: categoria,
+                Total: valor,
+                Percentual:
+                  totalGastos > 0
+                    ? `${((valor / totalGastos) * 100).toFixed(1)}%`
+                    : "0%",
+              }))
+          : [{ Categoria: "Sem gastos", Total: 0, Percentual: "0%" }];
+
+      // --- Montar workbook ---
       const workbook = XLSX.utils.book_new();
 
-      XLSX.utils.book_append_sheet(
-        workbook,
-        XLSX.utils.json_to_sheet(abaResumo),
-        "Resumo"
-      );
-      XLSX.utils.book_append_sheet(
-        workbook,
-        XLSX.utils.json_to_sheet(abaExtras),
-        "Extras"
-      );
-      XLSX.utils.book_append_sheet(
-        workbook,
-        XLSX.utils.json_to_sheet(abaGastos),
-        "Gastos"
-      );
+      const wsResumo = XLSX.utils.json_to_sheet(abaResumo);
+      wsResumo["!cols"] = [{ wch: 32 }, { wch: 22 }];
+
+      const wsExtras = XLSX.utils.json_to_sheet(abaExtras);
+      wsExtras["!cols"] = [{ wch: 30 }, { wch: 14 }];
+
+      const wsGastos = XLSX.utils.json_to_sheet(linhasGastos);
+      wsGastos["!cols"] = [
+        { wch: 12 },
+        { wch: 8 },
+        { wch: 16 },
+        { wch: 36 },
+        { wch: 14 },
+      ];
+
+      const wsCategorias = XLSX.utils.json_to_sheet(abaCategorias);
+      wsCategorias["!cols"] = [{ wch: 18 }, { wch: 14 }, { wch: 12 }];
+
+      XLSX.utils.book_append_sheet(workbook, wsResumo, "Resumo");
+      XLSX.utils.book_append_sheet(workbook, wsExtras, "Extras");
+      XLSX.utils.book_append_sheet(workbook, wsGastos, "Gastos");
+      XLSX.utils.book_append_sheet(workbook, wsCategorias, "Por Categoria");
 
       const nomeArquivo = `controle-gastos-${anoSelecionado}-${mesSelecionado}.xlsx`;
       XLSX.writeFile(workbook, nomeArquivo);
@@ -907,13 +1048,20 @@ export default function Home() {
     }
   };
 
-  // Se não estiver autenticado, mostra a tela de login
+  // -------------------------------------------------------------------------
+  // Valores derivados
+  // -------------------------------------------------------------------------
+
   if (!isAutenticado) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top,_#f8fafc,_#e2e8f0_55%,_#cbd5e1)] p-4 font-sans text-slate-900">
         <div className="w-full max-w-sm rounded-[32px] border border-slate-200 bg-white p-8 shadow-[0_20px_60px_rgba(15,23,42,0.10)]">
-          <h1 className="mb-2 text-center text-2xl font-bold text-slate-900">Acesso Restrito</h1>
-          <p className="mb-6 text-center text-sm text-slate-500">Informe a senha para acessar o painel de controle de gastos.</p>
+          <h1 className="mb-2 text-center text-2xl font-bold text-slate-900">
+            Acesso Restrito
+          </h1>
+          <p className="mb-6 text-center text-sm text-slate-500">
+            Informe a senha para acessar o painel de controle de gastos.
+          </p>
           <form onSubmit={handleLogin} className="flex flex-col gap-4">
             <input
               type="password"
@@ -946,9 +1094,26 @@ export default function Home() {
     planejamentoPagamento.mediaDiariaDisponivel
   );
 
+  // Dados para o gráfico de pizza — agrupados por categoria
+  const dadosGrafico = (() => {
+    const porCategoria: Record<string, number> = {};
+    gastos.forEach((g) => {
+      porCategoria[g.categoria] = (porCategoria[g.categoria] || 0) + g.valor;
+    });
+    return Object.entries(porCategoria)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+  })();
+
+  // -------------------------------------------------------------------------
+  // Render
+  // -------------------------------------------------------------------------
+
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_#f8fafc,_#e2e8f0_55%,_#cbd5e1)] text-slate-900">
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+
+        {/* ── Hero header ── */}
         <section className="overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.10)]">
           <div className="bg-gradient-to-r from-slate-950 via-slate-800 to-slate-700 px-4 py-6 text-white sm:px-8 sm:py-8">
             <div className="flex flex-col gap-6 xl:flex-row xl:items-center xl:justify-between">
@@ -964,7 +1129,8 @@ export default function Home() {
                 <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-200 sm:text-base">
                   Organize salário, extras, despesas e observações mensais com
                   separação por ano e mês, mantendo integração com Supabase,
-                  exportação em Excel e indicadores de planejamento até o dia 25.
+                  exportação em Excel e indicadores de planejamento até o dia
+                  25.
                 </p>
               </div>
 
@@ -989,6 +1155,7 @@ export default function Home() {
             </div>
           </div>
 
+          {/* ── Status bar ── */}
           <div className="border-t border-slate-200 bg-white px-4 py-4 sm:px-8">
             <div
               className={`rounded-2xl border px-4 py-4 text-sm ${obterClasseMensagem(
@@ -1013,13 +1180,6 @@ export default function Home() {
 
                 <div className="flex flex-col flex-wrap gap-3 sm:flex-row">
                   <button
-                    onClick={testarSupabase}
-                    className="w-full rounded-2xl bg-slate-900 px-4 py-2.5 font-medium text-white transition hover:bg-slate-800 sm:w-auto"
-                  >
-                    Testar Supabase
-                  </button>
-
-                  <button
                     onClick={carregarMesAtual}
                     className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-2.5 font-medium text-slate-700 transition hover:bg-slate-50 sm:w-auto"
                   >
@@ -1031,6 +1191,7 @@ export default function Home() {
           </div>
         </section>
 
+        {/* ── 4 indicator cards ── */}
         <section className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <IndicadorResumo
             titulo="Salário do mês"
@@ -1058,6 +1219,7 @@ export default function Home() {
           />
         </section>
 
+        {/* ── Competência + barra de progresso + ações rápidas ── */}
         <section className="mt-6 rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_14px_40px_rgba(15,23,42,0.08)] sm:p-6">
           <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
             <div>
@@ -1127,14 +1289,8 @@ export default function Home() {
                   titulo="Disponível"
                   valor={formatarMoeda(totalDisponivel)}
                 />
-                <MiniResumo
-                  titulo="Gasto"
-                  valor={formatarMoeda(totalGastos)}
-                />
-                <MiniResumo
-                  titulo="Restante"
-                  valor={formatarMoeda(restante)}
-                />
+                <MiniResumo titulo="Gasto" valor={formatarMoeda(totalGastos)} />
+                <MiniResumo titulo="Restante" valor={formatarMoeda(restante)} />
               </div>
             </div>
 
@@ -1169,14 +1325,15 @@ export default function Home() {
           </div>
         </section>
 
+        {/* ── Planejamento até o pagamento ── */}
         <section className="mt-6 rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_14px_40px_rgba(15,23,42,0.08)] sm:p-6">
           <div className="flex flex-col gap-2 border-b border-slate-200 pb-5">
             <h2 className="text-xl font-bold text-slate-900">
               Planejamento até o pagamento
             </h2>
             <p className="text-sm text-slate-500">
-              Indicadores baseados no saldo restante e no próximo recebimento do
-              dia 25.
+              Indicadores baseados no saldo restante e no próximo recebimento
+              do dia 25.
             </p>
           </div>
 
@@ -1235,7 +1392,9 @@ export default function Home() {
                     className={`w-fit rounded-full px-4 py-2 text-sm font-semibold ${faixaMediaDiaria.classeBadge}`}
                   >
                     Média diária:{" "}
-                    {formatarMoeda(planejamentoPagamento.mediaDiariaDisponivel)}
+                    {formatarMoeda(
+                      planejamentoPagamento.mediaDiariaDisponivel
+                    )}
                   </div>
                 </div>
               </div>
@@ -1265,23 +1424,143 @@ export default function Home() {
                 Indicadores de planejamento indisponíveis para esta competência
               </p>
               <p className="mt-2 text-sm leading-6 text-slate-600">
-                Os cálculos de média diária, média semanal, dias até pagamento e
-                previsão de saldo no dia 25 aparecem apenas quando o mês e o ano
-                selecionados correspondem à competência atual.
+                Os cálculos de média diária, média semanal, dias até pagamento
+                e previsão de saldo no dia 25 aparecem apenas quando o mês e o
+                ano selecionados correspondem à competência atual.
               </p>
             </div>
           )}
         </section>
 
+        {/* ── Gráfico — gastos por categoria ── */}
+        <section className="mt-6 rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_14px_40px_rgba(15,23,42,0.08)] sm:p-6">
+          <div className="flex flex-col gap-2 border-b border-slate-200 pb-5">
+            <h2 className="text-xl font-bold text-slate-900">
+              Gastos por categoria
+            </h2>
+            <p className="text-sm text-slate-500">
+              Distribuição das despesas do mês selecionado.
+            </p>
+          </div>
+
+          {dadosGrafico.length === 0 ? (
+            <div className="mt-6">
+              <EstadoVazio
+                titulo="Sem dados para exibir"
+                descricao="Adicione gastos para visualizar o gráfico de categorias."
+              />
+            </div>
+          ) : (
+            <div className="mt-6 grid gap-6 xl:grid-cols-2">
+              {/* Donut chart */}
+              <div className="flex items-center justify-center">
+                <div className="h-72 w-full max-w-sm">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={dadosGrafico}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={72}
+                        outerRadius={110}
+                        paddingAngle={3}
+                        dataKey="value"
+                      >
+                        {dadosGrafico.map((entry, index) => (
+                          <Cell
+                            key={`cell-${index}`}
+                            fill={
+                              CORES_CATEGORIA[entry.name] ?? "#64748b"
+                            }
+                          />
+                        ))}
+                      </Pie>
+                      <Tooltip content={<TooltipGrafico />} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              {/* Breakdown list */}
+              <div className="flex flex-col justify-center gap-2">
+                {dadosGrafico.map((item) => {
+                  const percentual =
+                    totalGastos > 0
+                      ? ((item.value / totalGastos) * 100).toFixed(1)
+                      : "0";
+                  return (
+                    <div
+                      key={item.name}
+                      className="flex items-center gap-3 rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3"
+                    >
+                      {/* Color dot */}
+                      <div
+                        className="h-3 w-3 flex-shrink-0 rounded-full"
+                        style={{
+                          backgroundColor:
+                            CORES_CATEGORIA[item.name] ?? "#64748b",
+                        }}
+                      />
+
+                      {/* Category name + bar */}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-medium text-slate-700">
+                            {item.name}
+                          </span>
+                          <span className="text-xs text-slate-500">
+                            {percentual}%
+                          </span>
+                        </div>
+                        <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-200">
+                          <div
+                            className="h-full rounded-full transition-all duration-500"
+                            style={{
+                              width: `${percentual}%`,
+                              backgroundColor:
+                                CORES_CATEGORIA[item.name] ?? "#64748b",
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Value */}
+                      <p className="flex-shrink-0 text-sm font-semibold text-slate-900">
+                        {formatarMoeda(item.value)}
+                      </p>
+                    </div>
+                  );
+                })}
+
+                {/* Total line */}
+                <div className="mt-1 flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+                  <span className="text-sm font-semibold text-slate-700">
+                    Total gasto
+                  </span>
+                  <span className="text-sm font-bold text-red-700">
+                    {formatarMoeda(totalGastos)}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
+
+        {/* ── Grid principal: Dados do mês | Novo gasto ── */}
         <div className="mt-6 grid gap-6 xl:grid-cols-[1.08fr_0.92fr]">
+
+          {/* ── Coluna esquerda: salário, extras, resumo ── */}
           <section className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_14px_40px_rgba(15,23,42,0.08)] sm:p-6">
             <div className="flex flex-col gap-2 border-b border-slate-200 pb-5">
-              <h2 className="text-xl font-bold text-slate-900">Dados do mês</h2>
+              <h2 className="text-xl font-bold text-slate-900">
+                Dados do mês
+              </h2>
               <p className="text-sm text-slate-500">
                 Área para salário, observações mensais e entradas extras.
               </p>
             </div>
 
+            {/* Salário */}
             <div className="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-4 sm:p-5">
               <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
@@ -1336,6 +1615,7 @@ export default function Home() {
               </div>
             </div>
 
+            {/* Observação mensal */}
             <div className="mt-6 rounded-3xl border border-slate-200 bg-white p-4 sm:p-5">
               <h3 className="text-lg font-semibold text-slate-900">
                 Observação do mês
@@ -1353,6 +1633,7 @@ export default function Home() {
               />
             </div>
 
+            {/* Formulário extra */}
             {mostrarCampoExtra && (
               <div className="mt-6 rounded-3xl border border-emerald-200 bg-emerald-50 p-4 sm:p-5">
                 <h3 className="text-lg font-semibold text-emerald-900">
@@ -1391,6 +1672,7 @@ export default function Home() {
               </div>
             )}
 
+            {/* Lista de extras */}
             <div className="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-4 sm:p-5">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div>
@@ -1433,7 +1715,9 @@ export default function Home() {
                     <tbody>
                       {extras.map((extra, i) => (
                         <tr
-                          key={extra.id ?? `${extra.nome}-${extra.valor}-${i}`}
+                          key={
+                            extra.id ?? `${extra.nome}-${extra.valor}-${i}`
+                          }
                           className="border-t border-slate-200"
                         >
                           <td className="px-4 py-3 font-medium text-slate-800">
@@ -1458,6 +1742,7 @@ export default function Home() {
               )}
             </div>
 
+            {/* Resumo financeiro escuro */}
             <div className="mt-6 rounded-3xl bg-gradient-to-br from-slate-950 via-slate-800 to-slate-700 p-6 text-white shadow-lg">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                 <div>
@@ -1503,7 +1788,9 @@ export default function Home() {
                   titulo="Previsão no dia 25"
                   valor={
                     competenciaAtual
-                      ? formatarMoeda(planejamentoPagamento.previsaoSaldoDia25)
+                      ? formatarMoeda(
+                          planejamentoPagamento.previsaoSaldoDia25
+                        )
                       : "Somente no mês atual"
                   }
                 />
@@ -1511,6 +1798,7 @@ export default function Home() {
             </div>
           </section>
 
+          {/* ── Coluna direita: novo gasto + lista ── */}
           <section className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_14px_40px_rgba(15,23,42,0.08)] sm:p-6">
             <div className="flex flex-col gap-2 border-b border-slate-200 pb-5">
               <h2 className="text-xl font-bold text-slate-900">Novo gasto</h2>
@@ -1598,6 +1886,7 @@ export default function Home() {
               </button>
             </div>
 
+            {/* Lista de gastos */}
             <div className="mt-8 rounded-3xl border border-slate-200 bg-slate-50 p-4 sm:p-5">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div>
@@ -1649,7 +1938,9 @@ export default function Home() {
                     <tbody>
                       {gastos.map((gasto, i) => (
                         <tr
-                          key={gasto.id ?? `${gasto.data}-${gasto.hora}-${i}`}
+                          key={
+                            gasto.id ?? `${gasto.data}-${gasto.hora}-${i}`
+                          }
                           className="border-t border-slate-200"
                         >
                           <td className="px-4 py-3 font-medium text-slate-800">
@@ -1694,6 +1985,10 @@ export default function Home() {
     </main>
   );
 }
+
+// ---------------------------------------------------------------------------
+// UI sub-components
+// ---------------------------------------------------------------------------
 
 function CampoBox({
   label,
